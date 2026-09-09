@@ -73,6 +73,13 @@ func NewBadRequestError(msg string) *AppError {
 	}
 }
 
+func NewUnauthorizedError(msg string) *AppError {
+	return &AppError{
+		Code:    401,
+		Message: msg,
+	}
+}
+
 // IsAppError verifica se um erro é do tipo AppError
 func IsAppError(err error) bool {
 	var appErr *AppError
