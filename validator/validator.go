@@ -6,7 +6,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/etoolstec/go-kit/document"
+	"github.com/etoolstec/gokit/document"
 	"github.com/go-playground/validator/v10"
 	"github.com/paemuri/brdoc"
 )

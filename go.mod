@@ -1,4 +1,4 @@
-module github.com/etoolstec/go-kit
+module github.com/etoolstec/gokit
 
 go 1.22
 
