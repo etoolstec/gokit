@@ -80,6 +80,13 @@ func NewUnauthorizedError(msg string) *AppError {
 	}
 }
 
+func NewForbiddenError(msg string) *AppError {
+	return &AppError{
+		Code:    403,
+		Message: msg,
+	}
+}
+
 // IsAppError verifica se um erro é do tipo AppError
 func IsAppError(err error) bool {
 	var appErr *AppError
