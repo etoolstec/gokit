@@ -30,7 +30,7 @@ use (
 | `validator` | CPF/CNPJ, validação struct | `appvalidation/*.go` + `utils/validators.go` |
 | `jwt` | Geração e validação JWT | `utils/jwt.go` |
 | `mapper` | DTO <-> Model com copier (substitui reflection manual) | `utils/mapper.go` |
-| `filter` | Filtros dinâmicos + GORM | `utils/filters.go` |
+| `filter` | Filtros dinâmicos + GORM | `utils/filter.go` |
 | `document` | Formatação CPF/CNPJ | `appvalidation/document.go` |
 
 ## Uso
