@@ -1,8 +1,10 @@
 package response
 
 import (
+	"net/http"
 	"strconv"
 
+	"github.com/etoolstec/gokit/apperror"
 	"github.com/gofiber/fiber/v2"
 )
 
@@ -28,9 +30,39 @@ func Deleted(c *fiber.Ctx, id any) error {
 func Deactivated(c *fiber.Ctx) error {
 	return c.Status(fiber.StatusOK).JSON(SuccessResponse{Status: "deactivated"})
 }
+
 func Error(c *fiber.Ctx, status int, code, msg string) error {
 	return c.Status(status).JSON(ErrorResponse{Error: code, Message: msg})
 }
+
+func AppError(c *fiber.Ctx, err error) error {
+	if appErr, ok := err.(*apperror.AppError); ok {
+		return RespondWithAppError(c, appErr)
+	}
+	// Fallback para erro interno
+	return InternalError(c, err.Error())
+}
+
+func RespondWithAppError(c *fiber.Ctx, err *apperror.AppError) error {
+	switch err.Code {
+	case http.StatusBadRequest:
+		return ValidationError(c, err.Message)
+	case http.StatusConflict:
+		return Conflict(c, err.Message)
+	case http.StatusNotFound:
+		return NotFound(c, err.Message)
+	case http.StatusInternalServerError:
+		return InternalError(c, err.Message)
+	case http.StatusUnauthorized:
+		return Unauthorized(c, err.Message)
+	case http.StatusForbidden:
+		return Forbidden(c, err.Message)
+	default:
+		// Caso não mapeado, responde com o código genérico
+		return Error(c, err.Code, "error", err.Message)
+	}
+}
+
 func ValidationError(c *fiber.Ctx, msg string) error {
 	return Error(c, fiber.StatusBadRequest, "validation_error", msg)
 }

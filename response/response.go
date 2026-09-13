@@ -51,7 +51,11 @@ func NewPaginated[T any](data []T, total int64, page, limit int) PaginatedRespon
 	}
 	return PaginatedResponse[T]{Data: data, Total: total, Page: page, Limit: limit, TotalPages: totalPages}
 }
-func NewApiResponse[T any](data T) ApiResponse[T] { return ApiResponse[T]{Data: data} }
+
+func NewApiResponse[T any](data T) ApiResponse[T] { 
+	return ApiResponse[T]{Data: data} 
+
+}
 func NewApiResponseWithMessage[T any](data T, msg string) ApiResponse[T] {
 	return ApiResponse[T]{Data: data, Message: msg}
 }
