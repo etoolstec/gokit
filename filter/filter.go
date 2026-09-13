@@ -13,7 +13,8 @@ import (
 // TYPES
 // ============================================================
 
-// FilterConfig define como um filtro deve ser aplicado
+// FilterConfig define como um filtro deve ser aplicado.
+// Mantido para compatibilidade; o motor atual usa map[string]any + reflection.
 type FilterConfig struct {
 	Column   string // Nome da coluna no banco
 	Operator string // Operador SQL: =, LIKE, >, <, etc.
@@ -21,14 +22,18 @@ type FilterConfig struct {
 }
 
 // ============================================================
-// FUNÇÕES
+// ENTRADA (Gin)
 // ============================================================
 
+// QueryParamsToFilters extrai os query params do request como filtros.
+// Parâmetros de paginação/ordenação são excluídos.
 func QueryParamsToFilters(c *gin.Context) map[string]any {
 	filters := make(map[string]any)
+	if c == nil || c.Request == nil || c.Request.URL == nil {
+		return filters
+	}
 
-	// Parâmetros que não são campos do model
-	excludedParams := map[string]bool{
+	excluded := map[string]bool{
 		"limit":  true,
 		"offset": true,
 		"page":   true,
@@ -40,8 +45,7 @@ func QueryParamsToFilters(c *gin.Context) map[string]any {
 		if len(values) == 0 {
 			continue
 		}
-		// Opcional: pular parâmetros de paginação/ordenação
-		if excludedParams[key] {
+		if excluded[key] {
 			continue
 		}
 		filters[key] = values[0]
@@ -49,80 +53,96 @@ func QueryParamsToFilters(c *gin.Context) map[string]any {
 	return filters
 }
 
-// ApplyFilters aplica filtros dinamicamente a uma query usando reflection
+// ============================================================
+// APLICAÇÃO
+// ============================================================
+
+// ApplyFilters aplica filtros dinamicamente a uma query usando reflection.
+//
+// Formato da chave:
+//   - "campo"            → campo = valor
+//   - "campo__like"      → campo LIKE %valor%
+//   - "campo__gte"       → campo >= valor
+//   - "campo__in"        → campo IN (v1, v2, ...)  — aceita "a,b,c" ou []any
+//   - "campo__between"   → campo BETWEEN a AND b   — aceita "a,b" ou []any{a,b}
+//
+// Chaves sem correspondência no model são silenciosamente ignoradas.
 func ApplyFilters(query *gorm.DB, model interface{}, filters map[string]interface{}) *gorm.DB {
-	if len(filters) == 0 {
+	if query == nil || len(filters) == 0 {
 		return query
 	}
 
-	// Obter o tipo da struct
 	t := reflect.TypeOf(model)
+	if t == nil {
+		return query
+	}
 	if t.Kind() == reflect.Ptr {
 		t = t.Elem()
 	}
+	if t.Kind() != reflect.Struct {
+		return query
+	}
 
-	// Mapear nome do campo → nome da coluna
 	fieldToColumn := buildFieldToColumnMap(t)
 
-	// Aplicar cada filtro
 	for key, value := range filters {
-		if value == nil || value == "" {
+		if value == nil {
+			continue
+		}
+		if s, ok := value.(string); ok && s == "" {
 			continue
 		}
 
-		// Determinar a coluna e o operador
 		column, operator, ok := parseFilterKey(key, fieldToColumn)
 		if !ok {
 			continue
 		}
 
-		// Aplicar o filtro na query
-		applyFilter(query, column, operator, value)
+		query = applyFilter(query, column, operator, value)
 	}
 
 	return query
 }
 
 // ============================================================
-// FUNÇÕES AUXILIARES
+// AUXILIARES
 // ============================================================
 
-// buildFieldToColumnMap constrói um mapa: nome do campo → nome da coluna
+// buildFieldToColumnMap constrói o mapa nome_do_campo → coluna,
+// usando a tag gorm:"column:...". Mapeia em lowercase para lookup case-insensitive.
 func buildFieldToColumnMap(t reflect.Type) map[string]string {
 	fieldMap := make(map[string]string)
 
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
 
-		// Se for struct aninhada, não processar (evitar recursão infinita)
-		if field.Type.Kind() == reflect.Struct && field.Anonymous == false {
+		// Pula structs aninhadas nomeadas (não-anônimas).
+		// Embedded anônimos (ex: gorm.Model) também são pulados aqui,
+		// porque não têm tag gorm:"column:" própria.
+		if field.Type.Kind() == reflect.Struct && !field.Anonymous {
 			continue
 		}
 
-		// Verificar se o campo tem a tag gorm
 		tag := field.Tag.Get("gorm")
 		if tag == "" {
 			continue
 		}
 
-		// Extrair o nome da coluna da tag
 		column := extractColumnFromTag(tag)
 		if column == "" {
 			continue
 		}
 
-		// Mapear lowercase para facilitar a busca
 		fieldMap[strings.ToLower(field.Name)] = column
 		fieldMap[strings.ToLower(column)] = column
-		fieldMap[strings.ToLower(field.Name)] = column
 	}
 
 	return fieldMap
 }
 
-// extractColumnFromTag extrai o nome da coluna da tag gorm
+// extractColumnFromTag extrai o nome da coluna de uma tag gorm.
+// Ex: "column:ent_id;primaryKey" → "ent_id"
 func extractColumnFromTag(tag string) string {
-	// Tag exemplo: "column:ent_id;primaryKey;autoIncrement"
 	parts := strings.Split(tag, ";")
 	for _, part := range parts {
 		if strings.HasPrefix(part, "column:") {
@@ -132,30 +152,25 @@ func extractColumnFromTag(tag string) string {
 	return ""
 }
 
-// parseFilterKey analisa a chave do filtro e retorna a coluna e o operador
+// parseFilterKey extrai coluna e operador de uma chave de filtro.
+// Retorna ok=false quando o campo não existe no model.
 func parseFilterKey(key string, fieldMap map[string]string) (column string, operator string, ok bool) {
-	// Verificar se a chave contém um operador: "nome__like", "data__gte", etc.
 	parts := strings.Split(key, "__")
 	fieldName := parts[0]
-	operator = "=" // Operador padrão
+	operator = "="
 
 	if len(parts) > 1 {
-		operator = parts[1]
+		operator = mapOperator(parts[1])
 	}
 
-	// Mapear operadores para SQL
-	operator = mapOperator(operator)
-
-	// Buscar a coluna no mapa
 	col, exists := fieldMap[strings.ToLower(fieldName)]
 	if !exists {
 		return "", "", false
 	}
-
 	return col, operator, true
 }
 
-// mapOperator mapeia operadores amigáveis para SQL
+// mapOperator traduz operadores amigáveis para SQL.
 func mapOperator(op string) string {
 	operators := map[string]string{
 		"eq":        "=",
@@ -179,103 +194,79 @@ func mapOperator(op string) string {
 	return "="
 }
 
-// applyFilter aplica o filtro na query
-func applyFilter(query *gorm.DB, column, operator string, value interface{}) {
+// applyFilter aplica UM filtro e devolve a query modificada.
+// GORM é imutável: query.Where(...) retorna um *gorm.DB novo.
+// Por isso o retorno é obrigatório — o caller precisa reatribuir.
+func applyFilter(query *gorm.DB, column, operator string, value interface{}) *gorm.DB {
 	switch operator {
 	case "=", "!=", ">", ">=", "<", "<=":
-		query = query.Where(fmt.Sprintf("%s %s ?", column, operator), value)
+		return query.Where(fmt.Sprintf("%s %s ?", column, operator), value)
 
 	case "LIKE", "ILIKE":
-		query = query.Where(fmt.Sprintf("%s %s ?", column, operator), "%"+value.(string)+"%")
+		s, ok := value.(string)
+		if !ok {
+			return query
+		}
+		return query.Where(fmt.Sprintf("%s %s ?", column, operator), "%"+s+"%")
 
 	case "IN":
-		query = query.Where(fmt.Sprintf("%s IN (?)", column), value)
+		values, ok := toSlice(value)
+		if !ok || len(values) == 0 {
+			return query
+		}
+		return query.Where(fmt.Sprintf("%s IN ?", column), values)
 
 	case "NOT IN":
-		query = query.Where(fmt.Sprintf("%s NOT IN (?)", column), value)
+		values, ok := toSlice(value)
+		if !ok || len(values) == 0 {
+			return query
+		}
+		return query.Where(fmt.Sprintf("%s NOT IN ?", column), values)
 
 	case "BETWEEN":
-		// value deve ser um slice com 2 elementos
-		if v, ok := value.([]interface{}); ok && len(v) == 2 {
-			query = query.Where(fmt.Sprintf("%s BETWEEN ? AND ?", column), v[0], v[1])
+		values, ok := toSlice(value)
+		if !ok || len(values) != 2 {
+			return query
 		}
+		return query.Where(fmt.Sprintf("%s BETWEEN ? AND ?", column), values[0], values[1])
 
 	case "IS NULL":
-		query = query.Where(fmt.Sprintf("%s IS NULL", column))
+		return query.Where(fmt.Sprintf("%s IS NULL", column))
 
 	case "IS NOT NULL":
-		query = query.Where(fmt.Sprintf("%s IS NOT NULL", column))
+		return query.Where(fmt.Sprintf("%s IS NOT NULL", column))
 
 	default:
-		query = query.Where(fmt.Sprintf("%s = ?", column), value)
+		return query.Where(fmt.Sprintf("%s = ?", column), value)
 	}
 }
 
-// ============================================================
-// FUNÇÕES DE ALTO NÍVEL (para usar no Repository)
-// ============================================================
-
-// FilterBuilder é um builder para criar filtros de forma fluente
-type FilterBuilder struct {
-	filters map[string]interface{}
-}
-
-// NewFilterBuilder cria um novo builder de filtros
-func NewFilterBuilder(c *gin.Context) *FilterBuilder {
-	return &FilterBuilder{
-		filters: make(map[string]interface{}),
+// toSlice normaliza value para []interface{}.
+// Aceita []interface{} direto, ou string CSV ("a,b,c") que vira slice.
+func toSlice(value interface{}) ([]interface{}, bool) {
+	switch v := value.(type) {
+	case []interface{}:
+		return v, true
+	case []string:
+		out := make([]interface{}, len(v))
+		for i, s := range v {
+			out[i] = s
+		}
+		return out, true
+	case string:
+		if v == "" {
+			return nil, false
+		}
+		parts := strings.Split(v, ",")
+		out := make([]interface{}, 0, len(parts))
+		for _, p := range parts {
+			p = strings.TrimSpace(p)
+			if p != "" {
+				out = append(out, p)
+			}
+		}
+		return out, true
+	default:
+		return nil, false
 	}
-}
-
-// Eq adiciona um filtro de igualdade
-func (fb *FilterBuilder) Eq(field string, value interface{}) *FilterBuilder {
-	fb.filters[field+"__eq"] = value
-	return fb
-}
-
-// Like adiciona um filtro LIKE
-func (fb *FilterBuilder) Like(field string, value string) *FilterBuilder {
-	fb.filters[field+"__like"] = value
-	return fb
-}
-
-// Gt adiciona um filtro > (maior que)
-func (fb *FilterBuilder) Gt(field string, value interface{}) *FilterBuilder {
-	fb.filters[field+"__gt"] = value
-	return fb
-}
-
-// Gte adiciona um filtro >= (maior ou igual)
-func (fb *FilterBuilder) Gte(field string, value interface{}) *FilterBuilder {
-	fb.filters[field+"__gte"] = value
-	return fb
-}
-
-// Lt adiciona um filtro < (menor que)
-func (fb *FilterBuilder) Lt(field string, value interface{}) *FilterBuilder {
-	fb.filters[field+"__lt"] = value
-	return fb
-}
-
-// Lte adiciona um filtro <= (menor ou igual)
-func (fb *FilterBuilder) Lte(field string, value interface{}) *FilterBuilder {
-	fb.filters[field+"__lte"] = value
-	return fb
-}
-
-// Between adiciona um filtro BETWEEN
-func (fb *FilterBuilder) Between(field string, from, to interface{}) *FilterBuilder {
-	fb.filters[field+"__between"] = []interface{}{from, to}
-	return fb
-}
-
-// In adiciona um filtro IN
-func (fb *FilterBuilder) In(field string, values []interface{}) *FilterBuilder {
-	fb.filters[field+"__in"] = values
-	return fb
-}
-
-// Build retorna os filtros
-func (fb *FilterBuilder) Build() map[string]interface{} {
-	return fb.filters
 }
