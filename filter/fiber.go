@@ -25,4 +25,5 @@ func QueryParamsToFiltersFiber(c *fiber.Ctx) map[string]any {
 		m[k] = v
 	}
 	return m
+
 }
